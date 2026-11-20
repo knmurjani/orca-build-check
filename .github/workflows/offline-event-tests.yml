@@ -1,0 +1,76 @@
+name: Public source offline event checks
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: public-source-compile-check
+  cancel-in-progress: false
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: 'never'
+    steps:
+      - name: Read approved patch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          path: candidate
+      - name: Read pinned public upstream
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: openai/codex
+          ref: d32063f96c2dff1dc96af839b3952abb6acfeda4
+          persist-credentials: false
+          path: upstream
+      - name: Verify baseline lock metadata and correct workspace versions only
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'a8b592e2c43db56209167aeb2d2dd8b3b97a92b2ff4ca4bc42428a5b0c74ac53  candidate/prepare_lock.py' | sha256sum --check
+          python3 candidate/prepare_lock.py
+          git -C upstream diff --stat -- codex-rs/Cargo.lock
+      - name: Verify and apply frozen patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '56b7f82bd36142c84d9182a41c70762feeaba29355297ee0b772a4459080689e  candidate/observation.patch' | sha256sum --check
+          git -C upstream apply --check ../candidate/observation.patch
+          git -C upstream apply ../candidate/observation.patch
+          git -C upstream diff --stat
+          df -h .
+          free -h
+      - name: Install pinned Rust for compilation
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: '1.95.0'
+          components: clippy,rustfmt,rust-src
+      - name: Verify frozen offline test selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '9513acfb77ac5ef5b0a836793ec5913dff402ffb8d685011eabe8dc25058e87e  candidate/verify_selected_tests.py' | sha256sum --check
+          echo '415bd858f789fd3e0737166242959d28ca8731853630ac0eec3913715d86b0ab  candidate/expected-tests.json' | sha256sum --check
+          echo 'a6f9226cfacfe60319361082aca7a05daac9851e94b4c7a14537b390aeeea40d  upstream/codex-rs/exec/tests/event_processor_with_json_output.rs' | sha256sum --check
+      - name: Build and enumerate only offline event processor tests
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo test --locked -p codex-exec --test all event_processor_with_json_output:: -- --list --color never | tee selected-tests.txt
+          python3 ../../candidate/verify_selected_tests.py list selected-tests.txt
+      - name: Run exact 34 offline event processor tests
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-exec --test all event_processor_with_json_output:: -- --test-threads=1 --color never | tee selected-results.txt
+          python3 ../../candidate/verify_selected_tests.py result selected-results.txt
