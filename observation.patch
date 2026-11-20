@@ -1,0 +1,317 @@
+--- a/codex-rs/exec/src/exec_events.rs
++++ b/codex-rs/exec/src/exec_events.rs
+@@ -91,6 +91,113 @@
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+ pub struct ThreadErrorEvent {
+     pub message: String,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub observation: Option<ExecErrorObservation>,
++}
++
++/// Closed, versioned observation only. Never authorizes a retry or changes status.
++/// Legacy message fields still exist; consumers must not persist raw events.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
++pub struct ExecErrorObservation {
++    pub version: u8,
++    pub category: ExecErrorCategory,
++    /// Origin of this observation, never an inferred final retry decision.
++    pub origin: ExecErrorOrigin,
++    pub notification_will_retry: Option<bool>,
++    pub http_status_class: ExecHttpStatusClass,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
++#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
++pub enum ExecErrorCategory {
++    Authentication,
++    Transport,
++    Capacity,
++    Context,
++    Policy,
++    Sandbox,
++    Input,
++    InternalServer,
++    Rollback,
++    Other,
++    Missing,
++    Unknown,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
++#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
++pub enum ExecHttpStatusClass {
++    Informational,
++    Success,
++    Redirect,
++    ClientError,
++    ServerError,
++    NotProvided,
++    Unknown,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
++#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
++pub enum ExecErrorOrigin {
++    CurrentNotification,
++    DirectFailedTurn,
++}
++
++impl ExecErrorObservation {
++    pub fn from_info(
++        info: Option<&codex_app_server_protocol::CodexErrorInfo>,
++        notification_will_retry: Option<bool>,
++        origin: ExecErrorOrigin,
++    ) -> Self {
++        use codex_app_server_protocol::CodexErrorInfo as Info;
++        use ExecErrorCategory as Category;
++        let (category, status) = match info {
++            Some(Info::Unauthorized) => (Category::Authentication, None),
++            Some(Info::HttpConnectionFailed { http_status_code })
++            | Some(Info::ResponseStreamConnectionFailed { http_status_code })
++            | Some(Info::ResponseStreamDisconnected { http_status_code })
++            | Some(Info::ResponseTooManyFailedAttempts { http_status_code }) => {
++                (Category::Transport, *http_status_code)
++            }
++            Some(Info::SessionBudgetExceeded)
++            | Some(Info::UsageLimitExceeded)
++            | Some(Info::RateLimitExceeded)
++            | Some(Info::FlexUnavailable)
++            | Some(Info::ServerOverloaded)
++            | Some(Info::PolicyCapacityUnavailable) => (Category::Capacity, None),
++            Some(Info::ContextWindowExceeded) => (Category::Context, None),
++            Some(Info::InferenceHookDenied)
++            | Some(Info::CyberPolicy)
++            | Some(Info::MisalignmentPolicyViolation)
++            | Some(Info::TooManyDenials) => (Category::Policy, None),
++            Some(Info::SandboxError) => (Category::Sandbox, None),
++            Some(Info::BadRequest)
++            | Some(Info::ModelNotFound)
++            | Some(Info::ActiveTurnNotSteerable { .. }) => (Category::Input, None),
++            Some(Info::InternalServerError) => (Category::InternalServer, None),
++            Some(Info::ThreadRollbackFailed) => (Category::Rollback, None),
++            Some(Info::Other) => (Category::Other, None),
++            None => (Category::Missing, None),
++            #[allow(unreachable_patterns)]
++            _ => (Category::Unknown, None),
++        };
++        let http_status_class = match status {
++            None => ExecHttpStatusClass::NotProvided,
++            Some(100..=199) => ExecHttpStatusClass::Informational,
++            Some(200..=299) => ExecHttpStatusClass::Success,
++            Some(300..=399) => ExecHttpStatusClass::Redirect,
++            Some(400..=499) => ExecHttpStatusClass::ClientError,
++            Some(500..=599) => ExecHttpStatusClass::ServerError,
++            Some(_) => ExecHttpStatusClass::Unknown,
++        };
++        Self {
++            version: 1,
++            category,
++            origin,
++            notification_will_retry,
++            http_status_class,
++        }
++    }
+ }
+ 
+ /// Canonical representation of a thread item and its domain-specific payload.
+--- a/codex-rs/exec/src/event_processor_with_jsonl_output.rs
++++ b/codex-rs/exec/src/event_processor_with_jsonl_output.rs
+@@ -32,6 +32,8 @@
+ use crate::exec_events::CommandExecutionItem;
+ use crate::exec_events::CommandExecutionStatus as ExecCommandExecutionStatus;
+ use crate::exec_events::ErrorItem;
++use crate::exec_events::ExecErrorObservation;
++use crate::exec_events::ExecErrorOrigin;
+ use crate::exec_events::FileChangeItem;
+ use crate::exec_events::FileUpdateChange;
+ use crate::exec_events::ItemCompletedEvent;
+@@ -448,13 +450,18 @@
+                 warning.status
+             }
+             ServerNotification::Error(notification) => {
++                let observation = Some(ExecErrorObservation::from_info(
++                    notification.error.codex_error_info.as_ref(),
++                    Some(notification.will_retry),
++                    ExecErrorOrigin::CurrentNotification,
++                ));
+                 let message = match notification.error.additional_details {
+                     Some(details) if !details.is_empty() => {
+                         format!("{} ({details})", notification.error.message)
+                     }
+                     _ => notification.error.message,
+                 };
+-                let error = ThreadErrorEvent { message };
++                let error = ThreadErrorEvent { message, observation };
+                 self.last_critical_error = Some(error.clone());
+                 events.push(ThreadEvent::Error(error));
+                 CodexStatus::Running
+@@ -545,6 +552,11 @@
+                             .turn
+                             .error
+                             .map(|error| ThreadErrorEvent {
++                                observation: Some(ExecErrorObservation::from_info(
++                                    error.codex_error_info.as_ref(),
++                                    None,
++                                    ExecErrorOrigin::DirectFailedTurn,
++                                )),
+                                 message: match error.additional_details {
+                                     Some(details) if !details.is_empty() => {
+                                         format!("{} ({details})", error.message)
+@@ -552,9 +564,17 @@
+                                     _ => error.message,
+                                 },
+                             })
+-                            .or_else(|| self.last_critical_error.clone())
++                            .or_else(|| {
++                                self.last_critical_error.clone().map(|mut cached| {
++                                    // The cache is not bound to this turn. Preserve legacy
++                                    // error behavior, but do not attribute its diagnostics.
++                                    cached.observation = None;
++                                    cached
++                                })
++                            })
+                             .unwrap_or_else(|| ThreadErrorEvent {
+                                 message: "turn failed".to_string(),
++                                observation: None,
+                             });
+                         events.push(ThreadEvent::TurnFailed(TurnFailedEvent { error }));
+                         CodexStatus::InitiateShutdown
+--- a/codex-rs/exec/src/lib.rs
++++ b/codex-rs/exec/src/lib.rs
+@@ -135,6 +135,10 @@
+ pub use exec_events::CommandExecutionItem;
+ pub use exec_events::CommandExecutionStatus;
+ pub use exec_events::ErrorItem;
++pub use exec_events::ExecErrorCategory;
++pub use exec_events::ExecErrorObservation;
++pub use exec_events::ExecErrorOrigin;
++pub use exec_events::ExecHttpStatusClass;
+ pub use exec_events::FileChangeItem;
+ pub use exec_events::FileUpdateChange;
+ pub use exec_events::ItemCompletedEvent;
+--- a/codex-rs/exec/tests/event_processor_with_json_output.rs
++++ b/codex-rs/exec/tests/event_processor_with_json_output.rs
+@@ -1756,6 +1756,11 @@
+         CollectedThreadEvents {
+             events: vec![ThreadEvent::Error(ThreadErrorEvent {
+                 message: "backend failed (request id abc)".to_string(),
++                observation: Some(codex_exec::ExecErrorObservation::from_info(
++                    None,
++                    Some(false),
++                    codex_exec::ExecErrorOrigin::CurrentNotification,
++                )),
+             })],
+             status: CodexStatus::Running,
+         }
+@@ -1783,11 +1788,63 @@
+             events: vec![ThreadEvent::TurnFailed(TurnFailedEvent {
+                 error: ThreadErrorEvent {
+                     message: "backend failed (request id abc)".to_string(),
++                    observation: None,
+                 },
+             })],
+             status: CodexStatus::InitiateShutdown,
+         }
+     );
++}
++
++#[test]
++fn cached_retry_is_historical_and_direct_failure_has_no_retry_flag() {
++    use codex_exec::{ExecErrorCategory, ExecErrorOrigin};
++    let mut processor = EventProcessorWithJsonOutput::new(None);
++    processor.collect_thread_events(ServerNotification::Error(ErrorNotification {
++        error: TurnError {
++            misalignment: None,
++            message: "transient".to_string(),
++            codex_error_info: Some(codex_app_server_protocol::CodexErrorInfo::Unauthorized),
++            additional_details: None,
++        },
++        will_retry: true,
++        thread_id: "thread-1".to_string(),
++        turn_id: "turn-1".to_string(),
++    }));
++    for direct in [false, true] {
++        let collected = processor.collect_thread_events(ServerNotification::TurnCompleted(
++            TurnCompletedNotification {
++                thread_id: "thread-1".to_string(),
++                turn: Turn {
++                    id: "turn-1".to_string(),
++                    root_turn_id: None,
++                    items_view: codex_app_server_protocol::TurnItemsView::Full,
++                    items: Vec::new(),
++                    status: TurnStatus::Failed,
++                    error: if direct { Some(TurnError {
++                        misalignment: None,
++                        message: "final".to_string(),
++                        codex_error_info: Some(codex_app_server_protocol::CodexErrorInfo::InternalServerError),
++                        additional_details: None,
++                    }) } else { None },
++                    started_at: None,
++                    completed_at: None,
++                    duration_ms: None,
++                },
++            },
++        ));
++        let ThreadEvent::TurnFailed(failed) = &collected.events[0] else {
++            panic!("expected failure")
++        };
++        if direct {
++            let observation = failed.error.observation.as_ref().unwrap();
++            assert_eq!(observation.origin, ExecErrorOrigin::DirectFailedTurn);
++            assert_eq!(observation.category, ExecErrorCategory::InternalServer);
++            assert_eq!(observation.notification_will_retry, None);
++        } else {
++            assert_eq!(failed.error.observation, None);
++        }
++    }
+ }
+ 
+ #[test]
+@@ -1817,3 +1874,47 @@
+         })
+     );
+ }
++
++// Source candidate only: these Rust tests have not been compiled or executed.
++#[test]
++fn closed_observation_projection_excludes_payloads() {
++    use codex_app_server_protocol::CodexErrorInfo;
++    use codex_exec::ExecErrorObservation;
++    let auth = ExecErrorObservation::from_info(
++        Some(&CodexErrorInfo::Unauthorized),
++        Some(false),
++        codex_exec::ExecErrorOrigin::CurrentNotification,
++    );
++    assert_eq!(serde_json::to_value(auth).unwrap(), json!({
++        "version": 1, "category": "AUTHENTICATION", "notification_will_retry": false, "origin": "CURRENT_NOTIFICATION",
++        "http_status_class": "NOT_PROVIDED"
++    }));
++    let transport = ExecErrorObservation::from_info(Some(&CodexErrorInfo::HttpConnectionFailed {
++        http_status_code: Some(429),
++    }), None, codex_exec::ExecErrorOrigin::DirectFailedTurn);
++    assert_eq!(serde_json::to_value(transport).unwrap(), json!({
++        "version": 1, "category": "TRANSPORT", "notification_will_retry": null, "origin": "DIRECT_FAILED_TURN",
++        "http_status_class": "CLIENT_ERROR"
++    }));
++    let missing = ExecErrorObservation::from_info(
++        None,
++        None,
++        codex_exec::ExecErrorOrigin::DirectFailedTurn,
++    );
++    assert_eq!(serde_json::to_value(missing).unwrap(), json!({
++        "version": 1, "category": "MISSING", "notification_will_retry": null, "origin": "DIRECT_FAILED_TURN",
++        "http_status_class": "NOT_PROVIDED"
++    }));
++}
++
++#[test]
++fn closed_observation_rejects_invalid_status_precision() {
++    use codex_app_server_protocol::CodexErrorInfo;
++    use codex_exec::{ExecErrorObservation, ExecHttpStatusClass};
++    for code in [0, 99, 600, 65535] {
++        let observation = ExecErrorObservation::from_info(Some(&CodexErrorInfo::HttpConnectionFailed {
++            http_status_code: Some(code),
++        }), Some(true), codex_exec::ExecErrorOrigin::CurrentNotification);
++        assert_eq!(observation.http_status_class, ExecHttpStatusClass::Unknown);
++    }
++}
