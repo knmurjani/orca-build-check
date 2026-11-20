@@ -416,11 +416,13 @@
      /// Emitted when a new thread is started as the first event.
      #[serde(rename = "thread.started")]
      ThreadStarted(ThreadStartedEvent),
-@@ -91,6 +94,113 @@
+@@ -91,6 +94,115 @@
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
  pub struct ThreadErrorEvent {
      pub message: String,
 +    #[serde(default, skip_serializing_if = "Option::is_none")]
++    // Emitted JSON omits None; this declaration describes output, not accepted input.
++    #[ts(optional)]
 +    pub observation: Option<ExecErrorObservation>,
 +}
 +
@@ -532,7 +534,7 @@
  /// Canonical representation of a thread item and its domain-specific payload.
 --- /dev/null
 +++ b/codex-rs/exec/src/exec_schema_conformance_tests.rs
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,196 @@
 +//! Test-only declaration/serialization export. Not process/model execution.
 +use crate::exec_binding_observation::{ExecBindingObservation, ObservedTerminal};
 +use crate::exec_events::{
@@ -684,6 +686,50 @@
 +        serde_json::to_vec_pretty(&json!({"diagnostic": values, "legacy_errors": legacy})).unwrap(),
 +    )
 +    .unwrap();
++}
++
++#[test]
++fn legacy_observation_output_optional_input_nullable() {
++    use serde_json::Value;
++
++    let observation = ExecErrorObservation {
++        version: 1,
++        category: ExecErrorCategory::Missing,
++        origin: ExecErrorOrigin::DirectFailedTurn,
++        notification_will_retry: None,
++        http_status_class: ExecHttpStatusClass::NotProvided,
++    };
++    let omitted = json!({"message": "dummy"});
++    let explicit_null = json!({"message": "dummy", "observation": null});
++    let some = json!({"message": "dummy", "observation": observation});
++    for (input, expect_some) in [
++        (omitted.clone(), false),
++        (explicit_null, false),
++        (some.clone(), true),
++    ] {
++        let decoded: ThreadErrorEvent = serde_json::from_value(input).unwrap();
++        assert_eq!(decoded.observation.is_some(), expect_some);
++        let encoded = serde_json::to_value(decoded).unwrap();
++        assert_eq!(
++            encoded,
++            if expect_some {
++                some.clone()
++            } else {
++                omitted.clone()
++            }
++        );
++        assert!(encoded.get("observation").is_none_or(|v| !v.is_null()));
++    }
++    let declaration = ThreadErrorEvent::decl();
++    let compact: String = declaration.chars().filter(|c| !c.is_whitespace()).collect();
++    assert!(compact.contains("observation?:ExecErrorObservation"));
++    assert!(!compact.contains("observation?:ExecErrorObservation|null"));
++    assert!(!compact.contains("observation:ExecErrorObservation|null"));
++    let malformed = json!({"message": "dummy", "observation": {}});
++    assert!(serde_json::from_value::<ThreadErrorEvent>(malformed).is_err());
++    assert!(serde_json::from_value::<ThreadErrorEvent>(Value::Null).is_err());
++    // This output type is intentionally narrower than the accepted deserialization input.
++    // No serde wire/default/null acceptance rule is changed by #[ts(optional)].
 +}
 --- a/codex-rs/exec/src/lib.rs
 +++ b/codex-rs/exec/src/lib.rs
