@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate manual diagnostic.binding schema, not generated Rust proof",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "stage",
+        "version"
+      ],
+      "properties": {
+        "type": {
+          "const": "diagnostic.binding"
+        },
+        "stage": {
+          "const": "setup_started"
+        },
+        "version": {
+          "const": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "stage",
+        "scope"
+      ],
+      "properties": {
+        "type": {
+          "const": "diagnostic.binding"
+        },
+        "stage": {
+          "const": "turn_bound"
+        },
+        "scope": {
+          "const": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "stage",
+        "scope",
+        "ordinal",
+        "observation"
+      ],
+      "properties": {
+        "type": {
+          "const": "diagnostic.binding"
+        },
+        "stage": {
+          "const": "current_error"
+        },
+        "scope": {
+          "const": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "category",
+            "origin",
+            "notification_will_retry",
+            "http_status_class"
+          ],
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "category": {
+              "enum": [
+                "AUTHENTICATION",
+                "TRANSPORT",
+                "CAPACITY",
+                "CONTEXT",
+                "POLICY",
+                "SANDBOX",
+                "INPUT",
+                "INTERNAL_SERVER",
+                "ROLLBACK",
+                "OTHER",
+                "MISSING",
+                "UNKNOWN"
+              ]
+            },
+            "origin": {
+              "enum": [
+                "CURRENT_NOTIFICATION",
+                "DIRECT_FAILED_TURN"
+              ]
+            },
+            "notification_will_retry": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "http_status_class": {
+              "enum": [
+                "INFORMATIONAL",
+                "SUCCESS",
+                "REDIRECT",
+                "CLIENT_ERROR",
+                "SERVER_ERROR",
+                "NOT_PROVIDED",
+                "UNKNOWN"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "stage",
+        "scope",
+        "status",
+        "direct_error"
+      ],
+      "properties": {
+        "type": {
+          "const": "diagnostic.binding"
+        },
+        "stage": {
+          "const": "terminal"
+        },
+        "scope": {
+          "const": 1
+        },
+        "status": {
+          "enum": [
+            "COMPLETED",
+            "FAILED",
+            "INTERRUPTED",
+            "OTHER"
+          ]
+        },
+        "direct_error": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "category",
+                "origin",
+                "notification_will_retry",
+                "http_status_class"
+              ],
+              "properties": {
+                "version": {
+                  "const": 1
+                },
+                "category": {
+                  "enum": [
+                    "AUTHENTICATION",
+                    "TRANSPORT",
+                    "CAPACITY",
+                    "CONTEXT",
+                    "POLICY",
+                    "SANDBOX",
+                    "INPUT",
+                    "INTERNAL_SERVER",
+                    "ROLLBACK",
+                    "OTHER",
+                    "MISSING",
+                    "UNKNOWN"
+                  ]
+                },
+                "origin": {
+                  "enum": [
+                    "CURRENT_NOTIFICATION",
+                    "DIRECT_FAILED_TURN"
+                  ]
+                },
+                "notification_will_retry": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "http_status_class": {
+                  "enum": [
+                    "INFORMATIONAL",
+                    "SUCCESS",
+                    "REDIRECT",
+                    "CLIENT_ERROR",
+                    "SERVER_ERROR",
+                    "NOT_PROVIDED",
+                    "UNKNOWN"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "stage",
+        "scope",
+        "terminal_seen",
+        "lag_seen",
+        "duplicate_terminal_seen",
+        "post_terminal_error_seen",
+        "shutdown_ok"
+      ],
+      "properties": {
+        "type": {
+          "const": "diagnostic.binding"
+        },
+        "stage": {
+          "const": "stream_ended"
+        },
+        "scope": {
+          "const": 1
+        },
+        "terminal_seen": {
+          "type": "boolean"
+        },
+        "lag_seen": {
+          "type": "boolean"
+        },
+        "duplicate_terminal_seen": {
+          "type": "boolean"
+        },
+        "post_terminal_error_seen": {
+          "type": "boolean"
+        },
+        "shutdown_ok": {
+          "type": "boolean"
+        }
+      }
+    }
+  ]
+}
