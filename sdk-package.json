@@ -1,0 +1,1 @@
+{"name":"isolated-orca-sdk-typecheck","version":"1.0.0","private":true,"dependencies":{"@modelcontextprotocol/sdk":"1.32.0","zod":"3.25.76","@types/node":"20.19.18","typescript":"5.9.2"}}
