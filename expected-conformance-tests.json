@@ -1,0 +1,4 @@
+[
+  "exec_schema_conformance_tests::emit_actual_derivations_and_wire_matrix",
+  "exec_schema_conformance_tests::legacy_observation_output_optional_input_nullable"
+]
