@@ -1,0 +1,53 @@
+name: Public source compile check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: public-source-compile-check
+  cancel-in-progress: false
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - name: Read approved patch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          path: candidate
+      - name: Read pinned public upstream
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: openai/codex
+          ref: d32063f96c2dff1dc96af839b3952abb6acfeda4
+          persist-credentials: false
+          path: upstream
+      - name: Verify and apply frozen patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '56b7f82bd36142c84d9182a41c70762feeaba29355297ee0b772a4459080689e  candidate/observation.patch' | sha256sum --check
+          git -C upstream apply --check ../candidate/observation.patch
+          git -C upstream apply ../candidate/observation.patch
+          git -C upstream diff --stat
+          df -h .
+          free -h
+      - name: Install pinned Rust for compilation
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: '1.95.0'
+          components: clippy,rustfmt,rust-src
+      - name: Compile library and test targets without running them
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo check --locked -p codex-exec --lib --tests
