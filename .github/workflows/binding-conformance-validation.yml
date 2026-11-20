@@ -70,20 +70,20 @@ jobs:
           set -euo pipefail
           cargo test --locked -p codex-exec --lib exec_binding_observation::tests:: -- --test-threads=1 --color never | tee binding-results.txt
           python3 ../../candidate/verify_binding_tests.py result binding-results.txt
-      - name: Build and enumerate exact one conformance test
+      - name: Build and enumerate exact two conformance tests
         working-directory: upstream/codex-rs
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p codex-exec --lib exec_schema_conformance_tests::emit_actual_derivations_and_wire_matrix -- --list --color never | tee conformance-list.txt
+          cargo test --locked -p codex-exec --lib exec_schema_conformance_tests:: -- --list --color never | tee conformance-list.txt
           python3 ../../candidate/verify_conformance_test.py list conformance-list.txt
-      - name: Execute actual Rust derivation and wire export
+      - name: Execute both Rust derivation and optional-output tests
         working-directory: upstream/codex-rs
         shell: bash
         run: |
           set -euo pipefail
           export EXEC_CONFORMANCE_DIR="$GITHUB_WORKSPACE/conformance-output"
-          cargo test --locked -p codex-exec --lib exec_schema_conformance_tests::emit_actual_derivations_and_wire_matrix -- --exact --test-threads=1 --color never | tee conformance-result.txt
+          cargo test --locked -p codex-exec --lib exec_schema_conformance_tests:: -- --test-threads=1 --color never | tee conformance-result.txt
           python3 ../../candidate/verify_conformance_test.py result conformance-result.txt
       - name: Validate actual serialized matrix against manual schema
         shell: bash
