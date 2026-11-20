@@ -1,0 +1,136 @@
+name: Public Exec declaration conformance validation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: public-source-compile-check
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: 'never'
+    steps:
+      - name: Read public validation inputs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          path: candidate
+      - name: Read exact public baseline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: openai/codex
+          ref: d32063f96c2dff1dc96af839b3952abb6acfeda4
+          persist-credentials: false
+          path: upstream
+      - name: Verify public inputs and apply exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          sha256sum --check binding-inputs.sha256
+          cd ..
+          python3 candidate/prepare_lock.py
+          git -C upstream apply --check ../candidate/binding.patch
+          git -C upstream apply ../candidate/binding.patch
+          git -C upstream diff --stat
+          df -h .
+          free -h
+          python3 --version
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          components: clippy,rustfmt,rust-src
+      - name: Confirm actual Rust version
+        run: |
+          set -euo pipefail
+          rustc --version | tee rust-version.txt
+          grep -E '^rustc 1\.95\.0 ' rust-version.txt
+      - name: Require full workspace formatting without rewriting
+        working-directory: upstream/codex-rs
+        run: cargo fmt --all -- --check
+      - name: Build and enumerate seven observer lib tests
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-exec --lib exec_binding_observation::tests:: -- --list --color never | tee binding-list.txt
+          python3 ../../candidate/verify_binding_tests.py list binding-list.txt
+      - name: Execute seven observer lib tests including real serde to Python
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-exec --lib exec_binding_observation::tests:: -- --test-threads=1 --color never | tee binding-results.txt
+          python3 ../../candidate/verify_binding_tests.py result binding-results.txt
+      - name: Build and enumerate exact one conformance test
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-exec --lib exec_schema_conformance_tests::emit_actual_derivations_and_wire_matrix -- --list --color never | tee conformance-list.txt
+          python3 ../../candidate/verify_conformance_test.py list conformance-list.txt
+      - name: Execute actual Rust derivation and wire export
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export EXEC_CONFORMANCE_DIR="$GITHUB_WORKSPACE/conformance-output"
+          cargo test --locked -p codex-exec --lib exec_schema_conformance_tests::emit_actual_derivations_and_wire_matrix -- --exact --test-threads=1 --color never | tee conformance-result.txt
+          python3 ../../candidate/verify_conformance_test.py result conformance-result.txt
+      - name: Validate actual serialized matrix against manual schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import sys; assert sys.version_info[:2] == (3,12), sys.version'
+          python3 -m venv schema-env
+          schema-env/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps -r candidate/schema-requirements.txt
+          schema-env/bin/python candidate/check_actual_wire_matrix.py conformance-output candidate/diagnostic-binding.schema.json
+      - name: Compare actual Rust-derived declarations to full SDK source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          cp candidate/sdk-package.json conformance-output/package.json
+          cp candidate/sdk-package-lock.json conformance-output/package-lock.json
+          cp candidate/compare-derived.ts conformance-output/compare-derived.ts
+          cp candidate/conformance-tsconfig.json conformance-output/tsconfig.json
+          cp -R upstream/sdk/typescript/src conformance-output/sdk
+          cd conformance-output
+          npm ci --ignore-scripts --no-audit --no-fund
+          ./node_modules/.bin/tsc --version
+          ./node_modules/.bin/tsc --project tsconfig.json
+      - name: Rebuild and enumerate existing 34 offline behavior tests
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-exec --test all event_processor_with_json_output:: -- --list --color never | tee selected-tests.txt
+          python3 ../../candidate/verify_selected_tests.py list selected-tests.txt
+      - name: Execute exact 34 offline behavior tests on new candidate
+        working-directory: upstream/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-exec --test all event_processor_with_json_output:: -- --test-threads=1 --color never | tee selected-results.txt
+          python3 ../../candidate/verify_selected_tests.py result selected-results.txt
+      - name: Compile standalone executable without running it
+        working-directory: upstream/codex-rs
+        run: cargo build --locked -p codex-exec --bin codex-exec
+      - name: Clippy selected public targets
+        working-directory: upstream/codex-rs
+        run: cargo clippy --locked -p codex-exec --lib --bin codex-exec -- -D warnings
+      - name: Record compiled executable hash without retained artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum upstream/codex-rs/target/debug/codex-exec
+          printf '%s\n' 'Executable built but not run, uploaded, released or retained after runner cleanup.'
