@@ -29,6 +29,13 @@ jobs:
           ref: d32063f96c2dff1dc96af839b3952abb6acfeda4
           persist-credentials: false
           path: upstream
+      - name: Verify baseline lock metadata and correct workspace versions only
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'a8b592e2c43db56209167aeb2d2dd8b3b97a92b2ff4ca4bc42428a5b0c74ac53  candidate/prepare_lock.py' | sha256sum --check
+          python3 candidate/prepare_lock.py
+          git -C upstream diff --stat -- codex-rs/Cargo.lock
       - name: Verify and apply frozen patch
         shell: bash
         run: |
